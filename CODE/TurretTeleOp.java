@@ -2,66 +2,80 @@ package org.firstinspires.ftc.teamcode;
 
 import com.qualcomm.robotcore.eventloop.opmode.LinearOpMode;
 import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
+import com.qualcomm.robotcore.hardware.Gamepad;
 
-@TeleOp(name = "Turret TeleOp", group = "Examples")
+@TeleOp(name = "Turret TeleOp (0-360)", group = "Examples")
 public class TurretTeleOp extends LinearOpMode {
 
-    // --- TELEOP CONSTANTS ---
-    public static final double INITIAL_TARGET_ANGLE = 0.0;
-
-    // Joystick tuning
     public static final double JOYSTICK_DEADZONE = 0.05;
-    public static final double MANUAL_TURN_SPEED = 3.0; // Degrees to add per loop
+    public static final double MAX_MANUAL_TURN_SPEED = 4.0;
 
-    // Preset Angles
-    public static final double ANGLE_FRONT = 0.0;
-    public static final double ANGLE_RIGHT = -90.0;
+    // Preset Angles for D-Pad
+    public static final double ANGLE_CENTER = 180.0;
     public static final double ANGLE_LEFT = 90.0;
-    public static final double ANGLE_BACK_POS = 180.0;
-    public static final double ANGLE_BACK_NEG = -180.0;
+    public static final double ANGLE_RIGHT = 270.0;
+
+    // Snap to our safe limits instead of 0/360
+    public static final double ANGLE_LIMIT_MIN = TurretSubsystem.MIN_TURRET_ANGLE_DEG;
+    public static final double ANGLE_LIMIT_MAX = TurretSubsystem.MAX_TURRET_ANGLE_DEG;
 
     @Override
     public void runOpMode() {
         TurretSubsystem turret = new TurretSubsystem(hardwareMap);
-        double targetAngle = INITIAL_TARGET_ANGLE;
 
-        telemetry.addLine("Ready to Start. Check calibration telemetry below if needed.");
+        Gamepad currentGamepad1 = new Gamepad();
+        Gamepad previousGamepad1 = new Gamepad();
+
+        // Safe Initialization: Read physical state to avoid aggressive startup snaps
+        turret.readSensors();
+        double targetAngle = turret.getTurretAngle();
+
+        telemetry.addLine("Ready to Start.");
+        telemetry.addLine("WARNING: Ensure turret is facing forward before starting!");
         turret.printCalibrationTelemetry(telemetry);
         telemetry.update();
 
         waitForStart();
 
         while (opModeIsActive()) {
+            previousGamepad1.copy(currentGamepad1);
+            currentGamepad1.copy(gamepad1);
 
-            // Adjust target angle using the left joystick X axis (with deadzone)
-            if (Math.abs(gamepad1.left_stick_x) > JOYSTICK_DEADZONE) {
-                targetAngle += gamepad1.left_stick_x * MANUAL_TURN_SPEED;
+            // Single hardware read per loop
+            turret.readSensors();
+
+            // 1. Manual Control
+            double joyX = currentGamepad1.left_stick_x;
+            if (Math.abs(joyX) > JOYSTICK_DEADZONE) {
+                double smoothedInput = joyX * joyX * Math.signum(joyX);
+                targetAngle += smoothedInput * MAX_MANUAL_TURN_SPEED;
             }
 
-            // Snap to exact preset angles using the D-Pad
-            if (gamepad1.dpad_up) targetAngle = ANGLE_FRONT;
-            if (gamepad1.dpad_right) targetAngle = ANGLE_RIGHT;
-            if (gamepad1.dpad_left) targetAngle = ANGLE_LEFT;
-            // Map down to 180 or -180 based on which is closer to avoid full rotations if already back there
-            if (gamepad1.dpad_down) {
-                if (turret.getTurretAngle() < 0) {
-                    targetAngle = ANGLE_BACK_NEG;
+            // 2. Preset Controls (Edge-detected to prevent fighting manual control)
+            if (currentGamepad1.dpad_up && !previousGamepad1.dpad_up) targetAngle = ANGLE_CENTER;
+            if (currentGamepad1.dpad_left && !previousGamepad1.dpad_left) targetAngle = ANGLE_LEFT;
+            if (currentGamepad1.dpad_right && !previousGamepad1.dpad_right) targetAngle = ANGLE_RIGHT;
+
+            if (currentGamepad1.dpad_down && !previousGamepad1.dpad_down) {
+                if (turret.getTurretAngle() < 180.0) {
+                    targetAngle = ANGLE_LIMIT_MIN;
                 } else {
-                    targetAngle = ANGLE_BACK_POS;
+                    targetAngle = ANGLE_LIMIT_MAX;
                 }
             }
 
-            // Constrain target variable to the global hard limits defined in the subsystem
+            // 3. Safety Constrain Target
             targetAngle = Math.max(TurretSubsystem.MIN_TURRET_ANGLE_DEG,
                                    Math.min(TurretSubsystem.MAX_TURRET_ANGLE_DEG, targetAngle));
 
-            // Run the PID controller
+            // 4. Update the subsystem
             turret.setTargetAngle(targetAngle);
 
-            // Telemetry output
-            telemetry.addData("Target Angle", targetAngle);
-            telemetry.addData("Actual Angle", turret.getTurretAngle());
-            turret.printCalibrationTelemetry(telemetry);
+            // 5. User Feedback
+            telemetry.addData("Target Angle", "%.2f", targetAngle);
+            telemetry.addData("Actual Angle", "%.2f", turret.getTurretAngle());
+            telemetry.addData("Error", "%.2f", targetAngle - turret.getTurretAngle());
+
             telemetry.update();
         }
     }
